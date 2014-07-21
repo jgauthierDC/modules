@@ -1,0 +1,9 @@
+name = Quiz Reporting
+package = Quiz Addon
+description = New Module that provides configurable exports from the quiz module
+core = 6.x
+php = 5
+dependencies[] = quiz
+dependencies[] = dbtng
+
+files[] = quiz_reporting.file.inc

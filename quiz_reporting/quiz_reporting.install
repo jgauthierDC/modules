@@ -1,0 +1,206 @@
+<?php
+
+/**
+ * @file
+ * Quiz Results Export module install file.
+ *
+ */
+ 
+function quiz_reporting_install() {
+  drupal_install_schema('quiz_reporting');
+  _quiz_reporting_populate_indices();
+}
+
+function quiz_reporting_uninstall() {
+  drupal_uninstall_schema("quiz_reporting");
+}
+
+function quiz_reporting_schema() {
+  $schema['quiz_reporting_state_index'] = array(
+    'description' => t('State index for Quiz Reporting module to speed queries.'),
+    'fields' => array(
+      'uid' => array(
+        'description' => t('Join to user table'),
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'state' => array(
+        'description' => t('State'),
+        'type' => 'char',
+        'length' => '12',
+        'not null' => TRUE,
+        'default' => '',
+      ),
+    ),
+    'primary key' => array('state', 'uid'),
+  );
+  
+  $schema['quiz_reporting_primary_business_index'] = array(
+    'description' => t('Indexes the user profile primary business field for Quiz Reporting module to speed queries.'),
+    'fields' => array(
+      'uid' => array(
+        'description' => t('Join to user table'),
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'primary_business' => array(
+        'description' => t('Primary Business'),
+        'type' => 'char',
+        'length' => '64',
+        'not null' => TRUE,
+        'default' => '',
+      ),
+    ),
+    'primary key' => array('primary_business', 'uid'),
+  );
+  $schema['quiz_reporting_saved'] = array(
+    'description' => t('Saved user report settings'),
+    'fields' => array(
+      'report_id' => array(
+        'description' => t('Autoinrement ID'),
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'timestamp' => array(
+        'description' => t('Date query was last saved'),
+        'type' => 'int',
+        'not null' => FALSE,
+      ),
+      'uid' => array(
+        'description' => t('User ID join to users table'),
+        'type' => 'int',
+        'not null' => FALSE,
+      ),
+      'cid' => array(
+        'description' => t('Certificate ID'),
+        'type' => 'int',
+        'not null' => FALSE,
+      ),
+      'report_name' => array(
+        'description' => t('Report Name'),
+        'type' => 'varchar',
+        'length' => '255',
+        'not null' => FALSE,
+      ),
+      'formstate' => array(
+        'description' => t('Serialized form values for the saved query.'),
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+      ),
+      'user_stats_report' => array(
+        'description' => t('User stats summary associated with this report.'),
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+      ),
+      'user_stats_all_time' => array(
+        'description' => t('User stats summary associated with this report., no time element'),
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+      ),
+    ),
+    'primary key' => array('report_id'),
+    'indexes' => array(
+      'report_id' => array('report_id', 'report_name'),
+    ),
+  );
+	$schema['quiz_reporting_saved_stats'] = array(
+	'description' => t('Holds stats for various reports for quiz reporting!'),
+	'fields' => array(
+	'stat_id' => array(
+	  'description' => t('TODO: please describe this field!'),
+	  'type' => 'serial',
+	  'unsigned' => TRUE,
+	  'not null' => TRUE,
+	),
+	'cert_nid' => array(
+	  'description' => t('TODO: please describe this field!'),
+	  'type' => 'int',
+	  'not null' => TRUE,
+	),
+	'timestamp' => array(
+	  'description' => t('TODO: please describe this field!'),
+	  'type' => 'int',
+	  'not null' => FALSE,
+	),
+	'vals' => array(
+	  'description' => t('TODO: please describe this field!'),
+	  'type' => 'text',
+	  'size' => 'big',
+	  'not null' => FALSE,
+	),
+	'month' => array(
+	  'description' => t('TODO: please describe this field!'),
+	  'type' => 'text',
+	  'not null' => TRUE,
+	),
+	),
+	'primary key' => array('stat_id'),
+	);
+	
+	$schema['quiz_reporting_saved_stats_month'] = array(
+	'description' => t('Holds stats for various reports for quiz reporting!'),
+	'fields' => array(
+	'stat_id' => array(
+	  'description' => t('TODO: please describe this field!'),
+	  'type' => 'serial',
+	  'unsigned' => TRUE,
+	  'not null' => TRUE,
+	),
+	'cert_nid' => array(
+	  'description' => t('TODO: please describe this field!'),
+	  'type' => 'int',
+	  'not null' => TRUE,
+	),
+	'timestamp' => array(
+	  'description' => t('TODO: please describe this field!'),
+	  'type' => 'int',
+	  'not null' => FALSE,
+	),
+	'vals' => array(
+	  'description' => t('TODO: please describe this field!'),
+	  'type' => 'text',
+	  'size' => 'big',
+	  'not null' => FALSE,
+	),
+	'month' => array(
+	  'description' => t('TODO: please describe this field!'),
+	  'type' => 'text',
+	  'not null' => TRUE,
+	),
+	),
+	'primary key' => array('stat_id'),
+	);
+
+  return $schema;
+}
+
+/** populate the state index table from the profile_values table
+*/
+function _quiz_reporting_populate_indices() {
+  // populate the state index for faster reporting, but only if there's a profile_state field
+  if (db_result(db_query("SELECT COUNT(*) FROM {profile_fields} WHERE name = '%s'", 'profile_state'))) {
+    $query = "INSERT IGNORE quiz_reporting_state_index
+  (uid,state)
+  (SELECt DISTINCT uid, pv.value
+  FROM profile_values pv LEFT JOIN profile_fields pf ON (pv.fid = pf.fid)
+  WHERE pf.name = 'profile_state'
+  AND pv.value <> '')";
+    $result = db_query($query);
+  }
+  // and primary business
+  if (db_result(db_query("SELECT COUNT(*) FROM {profile_fields} WHERE name = '%s'", 'profile_primary_business'))) {
+    $query = "INSERT IGNORE quiz_reporting_primary_business_index
+  (uid,primary_business)
+  (SELECt DISTINCT uid, pv.value
+  FROM profile_values pv LEFT JOIN profile_fields pf ON (pv.fid = pf.fid)
+  WHERE pf.name = 'profile_primary_business'
+  AND pv.value <> '')";
+    $result = db_query($query);
+  }
+}

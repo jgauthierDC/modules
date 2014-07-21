@@ -1,0 +1,975 @@
+<?php
+/**
+ * @file
+ * Quiz Results Export module file.
+ *
+ * This module allows you to export all Quiz results to portable formats.
+ */
+
+/**
+ * Implements hook_perm().
+ */
+function quiz_reporting_perm() {
+  return array('Export Quiz Results');
+}
+
+/**
+ * Implements hook_menu().
+ */
+function quiz_reporting_menu() {
+  $items['admin/quiz/export_quiz_results'] = array(
+    'title' => 'Export quiz results',
+    'description' => 'Export quiz results',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('quiz_reporting_certificates_form'),
+    'access arguments' => array('Export Quiz Results'),
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'quiz_reporting.form.inc',
+  );
+  $items['admin/quiz/export_quiz_results_form'] = array(
+    'title' => 'Export quiz results form',
+    'description' => 'Export quiz results',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('quiz_reporting_export_form'),
+    'access arguments' => array('Export Quiz Results'),
+    'type' => MENU_CALLBACK,
+    'file' => 'quiz_reporting.form.inc',
+  );
+  $items['admin/quiz/download'] = array(
+    'title' => 'download',
+    'description' => 'download a file passed to it in the url',
+    'page callback' => 'quiz_reporting_download',
+    'page arguments' => array(3),
+    'access arguments' => array('Export Quiz Results'),
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_user().
+ *
+ * on user_save (submit) add a record to the custom index table(s)
+ * on delete, remove the record
+ */
+function quiz_reporting_user($op, &$edit, &$account, $category = NULL) {
+  if ($op == 'submit') {
+    // couldn't get the values from $edit, on insert or save because profile
+    // had already blanked them. use REPLACE because it updates and inserts so
+    // i don't need to worry about it
+    db_query("REPLACE {quiz_reporting_state_index} (uid, state) values ('%d', '%s')", array($account->uid, $edit['profile_state']));
+    //db_query("REPLACE {quiz_reporting_primarybusiness_index} (uid, state) values ('%d', '%s')", array($account->uid, $edit['profile_primary_business']));
+  }
+  if ($op == "delete") {
+    db_query("DELETE from {quiz_reporting_state_index} where uid = %s", $account->uid);
+  }
+}
+
+/**
+ * Implements hook_cron().
+ */
+function quiz_reporting_cron() {
+  _quiz_reporting_get_stats();
+  _quiz_reporting_get_stats_month();
+}
+
+/**
+ * Implements hook_block().
+ */
+function quiz_reporting_block($op = 'list', $delta = 0, $edit = array()){
+  $block = array();
+  switch ($op) {
+    case "list":
+      $block[0]["info"] = t('Quiz Reporting: User Saved Searches');
+      $block[1]["info"] = t('Quiz Reporting: Statistics');
+      $block[2]["info"] = t('Quiz Reporting: Users This Month');
+      $block[3]["info"] = t('Quiz Reporting: Users On This Report');
+      $block[4]["info"] = t('Quiz Reporting: All-time users on this report');
+      $block[5]["info"] = t('Quiz Reporting: Highlights');
+      break;
+    case "view":
+      switch ($delta) {
+        case  0:
+          $block["subject"] = 'User Saved Searches';
+          $block['content'] = quiz_reporting_saved_queries();
+          break;
+        case 1:
+          $block["subject"] = 'User Statistics All time';
+          $block["content"] = quiz_reporting_user_stats_block('all');
+          break;
+         case 2:
+          $block["subject"] = 'Users This Month';
+          $block["content"] = quiz_reporting_user_stats_block('this');
+          break;
+        case 3:
+          $block['subject'] = 'Users On This report';
+          $block['content'] = quiz_reporting_stats_this_report('user_stats_report', 'Registrants For This Report');
+          break;
+        case 4:
+          $block['subject'] = 'Users On This Report All Time';
+          $block['content'] = quiz_reporting_stats_this_report('user_stats_all_time', 'Users For This Report All time');
+          break;
+        // Highlights.
+        case 5:
+          // Number of users.
+          $list[] = t('Total Registered Users: !total', array(
+            '!total' => db_result(db_query("SELECT COUNT(*) FROM {users} where uid > 1")),
+          ));
+
+          // Number of certificate instances passed, that is, per certificate,
+          // the number of users who passed it.
+          $certificates = quiz_reporting_certificates();
+          $total = 0;
+          $graduates = array();
+          foreach ($certificates as $certificate) {
+            $uids = quiz_reporting_certificate_users($certificate['cert_nid'], 'graduates');
+
+            // if admin is in the list, remove
+            if (($key = array_search("1", $uids)) !== FALSE) {
+              unset($uids[$key]);
+            }
+            $total += count($uids);
+            $graduates = array_merge($graduates, $uids);
+          }
+          $list[] = t('Total Certifications Passed: !total', array(
+            '!total' => $total,
+          ));
+
+          // Number of unique users who have passed at least 1 certification.
+          $unique_graduates = array_unique($graduates);
+          $list[] = t('Total Unique Graduates: !total', array(
+            '!total' => count($unique_graduates),
+          ));
+
+          // Render block.
+          $block['subject'] = 'Highlights';
+          $block['content'] = theme('item_list', $list);
+          break;
+      }
+  }
+  return $block;
+}
+
+function quiz_reporting_stats_block($options = array()) {
+  // load the stats for the report_id that's on the url
+  $report_id = $_GET['report'];
+  global $user;
+  $vals_s = db_result(db_query("SELECT formstate FROM {quiz_reporting_saved} WHERE report_id = %d and uid = %d", $report_id, $user->uid));
+  if (empty($vals_s)) {
+    return '';
+  }
+  else {
+    $vals = unserialize($vals_s);
+    $content = quiz_reporting_user_stats_block(FALSE, $stats);
+    return $content;
+  }
+}
+
+
+/*
+* A page showing User Stats
+* //http://www.jqplot.com/tests/pie-donut-charts.php
+*
+*/
+function quiz_reporting_user_stats_block($month, $stats=array(), $title=NULL){
+  drupal_add_js(drupal_get_path('module', 'quiz_reporting') . '/jplot/jquery1.4.4.min.js');
+  drupal_add_js(drupal_get_path('module', 'quiz_reporting') . '/jplot/jquery.jqplot.js');
+  drupal_add_js(drupal_get_path('module', 'quiz_reporting') . '/jplot/plugins/jqplot.pieRenderer.min.js');
+  drupal_add_css(drupal_get_path('module', 'quiz_reporting') . '/jplot/jquery.jqplot.css');
+ 
+  $cert_nid = $_GET['cert'];
+  if (isset($month)) { 
+    if ($month == 'this') {
+      $title = 'Users for ' . date('F, Y', strtotime('first day of this month'));
+      $divname = 'chart_thismonth';
+    }
+    else {
+      $title = 'Users for All Time';
+      $divname = 'chart_alltime';
+    }
+    $stats = _quiz_reporting_load_stats($month, $cert_nid);
+    if (empty($stats)) { 
+      return '' ;
+    }
+  } 
+  else {
+    $divname = str_replace(' ', '', $title);
+  }
+  // add the stats to a string for use by jqplot
+  $jqdata = '';
+  $total = 0;
+  foreach($stats as $name => $value){
+	if ($name=="Certified"){ $name ="Completed"; }
+	if ($name=="Not Finished"){ $name ="Not Completed"; }
+	
+	if ( ($name!="Total") && ($name!="Not Certified") ){
+		$jqdata .= "['" . $name . " (" . $value .")', " . $value . "], ";
+		$total = $total + $value;
+	}
+  }
+  
+  // dsm('div is: '.$divname . 'vals are: '. print_r($jqdata,TRUE));
+  $content = $form;
+  $content .= "   
+  <div id=\"$divname\" style=\"height:300px; width:500px;\"></div>
+  <script type=\"text/javascript\">
+  $(document).ready(function(){
+  var data = [
+    $jqdata
+  ];
+  var plot1 = jQuery.jqplot ('$divname', [data], 
+    { 
+      title:'$title ' + '($total)' ,
+      seriesDefaults: {
+        // Make this a pie chart.
+        renderer: jQuery.jqplot.PieRenderer, 
+        rendererOptions: {
+          // Put data labels on the pie slices.
+          // By default, labels show the percentage of the slice.
+          showDataLabels: true
+        }
+      }, 
+      legend: { show:true, location: 'e' }
+    }
+  );
+});
+  </script>";
+ return $content;
+}
+
+/**
+* called by hook_block
+* returns stats from the saved report 
+* on the URL
+**/
+function quiz_reporting_stats_this_report($field, $title){
+  //$pieces = explode('/', request_uri());
+  //$report_id = end($pieces);
+  $report_id = $_GET['report'];
+  global $user;
+  $val_s = db_result(db_query("SELECT $field FROM {quiz_reporting_saved} WHERE report_id = %d and uid = %d", $report_id, $user->uid));
+  if (empty($val_s)) {
+    return '';
+  }
+  $vals = unserialize($val_s);
+  return quiz_reporting_user_stats_block(NULL, $vals, $title);
+}
+
+/**
+* Make a page showing the queries saved for the current user
+*
+**/
+function quiz_reporting_saved_queries() {
+	//watchdog('quiz reporting', 'quiz_reporting_saved_queries: '.print_r($_GET,true), array(), WATCHDOG_NOTICE);
+	$q = $_GET;
+	unset($q['q']);
+	global $user;
+	// get the user's saved reports
+	$result = db_query("SELECT * from {quiz_reporting_saved} WHERE uid = %d ORDER BY timestamp desc", $user->uid);
+	$queries = array();
+	while ($report = db_fetch_object($result)) {
+		$queries[] = array(
+		  l($report->report_name, "admin/quiz/export_quiz_results_form", array('query' => array_merge($q, array('report' => $report->report_id,'cid' => $report->cid) ))),
+		  quiz_reporting_format_date($report->timestamp),
+		);
+	}
+	return theme('table', array(t('Saved Query'), t('Date Saved')), $queries);
+}
+
+/**
+* used by the block to load stats from the database
+**/
+function _quiz_reporting_load_stats($month, $cert_nid = '') {
+  $result = db_select('quiz_reporting_saved_stats', 'stats')
+    ->fields('stats')
+    ->condition('month', $month, '=')
+    ->condition('cert_nid', $cert_nid, '=')
+    ->orderBy('timestamp', 'DESC')
+    ->range(0,1)
+    ->execute();
+  foreach ($result as $row) {
+    $values = unserialize($row->vals);
+  }
+  return $values;
+}
+
+/**
+* Make a page to list all the files created by the current user
+**/
+function quiz_reporting_user_files() {
+  global $user;
+  $user_file_dir = file_directory_path() . '/quiz_reporting/' . $user->uid;  
+  $flist = file_scan_directory($user_file_dir, 'csv', array('.', '..', 'CVS') , 0, TRUE, 'basename');
+  $filelist = array();
+  foreach ($flist as $f => $info) {
+    $ctime = quiz_reporting_format_date(filectime($_SERVER['DOCUMENT_ROOT'] . '/' . $info->filename));
+    $file =  l($f , 'admin/quiz/download/' . $f);  
+    // $file = l($f, 'sites/default/files/quiz_reporting/' . $user->uid . '/' . $f);
+    $filelist[] = array($ctime, $file);
+  }
+  return theme('table', array(t('Date Created'), ('Filename')), $filelist);
+}
+
+/*
+* refactored 5/22 to add support for new table & craete stats for different certs
+*/
+function _quiz_reporting_get_stats($month = 'all') {
+  // Determine date range.
+  $date_clause = $month == 'this' ? "AND users.created > " . strtotime('first day of this month') : '';
+
+  // Get total number of users.
+  $total = db_result(db_query("SELECT COUNT(*) FROM {users} WHERE uid > 1 " . $date_clause));
+  if (empty($total)) {
+    return;
+  }
+
+  $certs = quiz_reporting_certificates();
+  $resultTruncate = db_truncate('quiz_reporting_saved_stats')->execute();
+
+  foreach ($certs as $cert) {
+    $stats = array('Total' => $total);
+
+    // Get NIDs of quizzes to pass for this certification.
+    $quizzes_to_pass = quiz_reporting_quizzes_to_pass($cert['cert_nid']);
+    $quiz_placeholders = db_placeholders($quizzes_to_pass);
+
+    // Get number of users who haven't started any of these quizzes.
+    $stats['Not Started'] = db_result(db_query("SELECT COUNT(*)
+      FROM {users}
+      WHERE users.uid > 1
+        $date_clause
+        AND users.uid NOT IN (
+          SELECT DISTINCT uid
+          FROM {quiz_node_results}
+          WHERE nid IN ($quiz_placeholders)
+        )", $quizzes_to_pass));
+
+    // Get total number of users who have passed all of these quizzes.
+    $stats['Certified'] = db_result(db_query("SELECT COUNT(*)
+      FROM (
+        SELECT subquery2.uid
+        FROM (
+          SELECT quiz_node_results.uid, IF(MAX(quiz_node_results.score) >= quiz_node_properties.pass_rate, 1, 0) 'passed'
+          FROM {quiz_node_results}
+          INNER JOIN {quiz_node_properties} ON quiz_node_properties.nid = quiz_node_results.nid
+          INNER JOIN {users} ON users.uid = quiz_node_results.uid
+          WHERE users.uid > 1
+            AND quiz_node_results.nid IN ($quiz_placeholders)
+            AND quiz_node_results.score >= quiz_node_properties.pass_rate
+            $date_clause
+          GROUP BY quiz_node_results.uid, quiz_node_results.nid
+        ) subquery2
+        GROUP BY subquery2.uid
+        HAVING COUNT(subquery2.passed) >= %d
+      ) subquery", array_merge($quizzes_to_pass, array(count($quizzes_to_pass)))));
+
+    // A few more stats.
+    $stats['Not Finished'] = $stats['Total'] - $stats['Certified'] - $stats['Not Started'];
+    $stats['Not Certified'] = $stats['Total'] - $stats['Certified'];
+    
+    if ($stats['Not Finished'] < 0 ){
+    	$stats['Not Finished']=0;	
+    }
+    
+    // Save the stats.
+    $stats = serialize($stats);
+    db_insert('quiz_reporting_saved_stats')
+      ->fields(array(
+          'cert_nid' => $cert['cert_nid'],
+          'timestamp' => time(),
+          'month' => $month,
+          'vals' => $stats,
+        ))
+      ->execute();
+    $lastId = Database::getConnection()->lastInsertId();
+  }
+}
+
+function _quiz_reporting_get_stats_month($month = 'this'){
+  // Determine date range.
+
+  $lastmonth_start = strtotime(date('m/d/y h:i a',(strtotime('this month',strtotime(date('m/01/y'))))));
+  
+  $date_clause = $month == 'this' ? "AND users.created > " . $lastmonth_start : '';
+
+  // Get total number of users.
+  $total = db_result(db_query("SELECT COUNT(*) FROM {users} WHERE uid > 1 " . $date_clause));
+  if (empty($total)) {
+    return;
+  }
+
+  $certs = quiz_reporting_certificates();
+  $resultTruncate = db_truncate('quiz_reporting_saved_stats_month')->execute();
+
+  foreach ($certs as $cert) {
+    $stats = array('Total' => $total);
+
+    // Get NIDs of quizzes to pass for this certification.
+    $quizzes_to_pass = quiz_reporting_quizzes_to_pass($cert['cert_nid']);
+    $quiz_placeholders = db_placeholders($quizzes_to_pass);
+
+    // Get number of users who haven't started any quizzes.
+    $stats['Not Started'] = db_result(db_query("SELECT COUNT(*)
+      FROM {users}
+      WHERE users.uid > 1
+        $date_clause
+        AND users.uid NOT IN (
+          SELECT DISTINCT uid
+          FROM {quiz_node_results}
+          WHERE nid IN ($quiz_placeholders)
+        )", $quizzes_to_pass));
+
+    // Get total number of users who have passed all of these quizzes.
+    $stats['Certified'] = db_result(db_query("SELECT COUNT(*)
+      FROM (
+        SELECT subquery2.uid
+        FROM (
+          SELECT quiz_node_results.uid, IF(MAX(quiz_node_results.score) >= quiz_node_properties.pass_rate, 1, 0) 'passed'
+          FROM quiz_node_results
+          INNER JOIN node ON node.nid = quiz_node_results.nid
+          INNER JOIN quiz_node_properties ON quiz_node_properties.nid = quiz_node_results.nid
+          INNER JOIN users ON users.uid = quiz_node_results.uid
+          WHERE users.uid > 1
+            AND quiz_node_results.nid IN ($quiz_placeholders)
+            AND quiz_node_results.score >= quiz_node_properties.pass_rate
+            $date_clause
+          GROUP BY quiz_node_results.uid, quiz_node_results.nid
+          ORDER BY quiz_node_results.uid, node.title
+        ) subquery2
+        GROUP BY subquery2.uid
+        HAVING COUNT(subquery2.passed) = %d
+      ) subquery", array_merge($quizzes_to_pass, array(count($quizzes_to_pass)))));
+
+    // A few more stats.
+    $stats['Not Finished'] = $stats['Total'] - $stats['Certified'] - $stats['Not Started'];
+    $stats['Not Certified'] = $stats['Total'] - $stats['Certified'];
+
+    if ($stats['Not Finished'] < 0 ){
+    	$stats['Not Finished']=0;	
+    }
+    
+    // Save the stats.
+    $stats = serialize($stats);
+	
+    db_insert('quiz_reporting_saved_stats_month')
+      ->fields(array(
+          'cert_nid' => $cert['cert_nid'],
+          'timestamp' => time(),
+          'month' => $month,
+          'vals' => $stats,
+        ))
+      ->execute();
+    $lastId = Database::getConnection()->lastInsertId();
+  }
+}
+
+
+function _quiz_reporting_get_stats_month_DEPRECATED($month = 'this'){
+
+
+	$start_date = strtotime('first day of this month');
+	$date_clause = "AND u.created > ". $start_date;
+
+	
+	$total_query = "SELECT COUNT(*) FROM {users} u WHERE uid > 1 " . $date_clause;
+	$total = db_result(db_query($total_query));
+	
+	if (!empty($total)) {
+	
+	
+		$certs = quiz_reporting_certificates();
+		//watchdog('quiz reporting', 'CERTS: '.print_r($certs, true), array(), WATCHDOG_NOTICE);
+		
+		$resultTruncate = db_truncate('quiz_reporting_saved_stats_month')->execute();
+		foreach ($certs as $cert) {
+			$stats = array();
+			$qnids = array();
+			$stats['Total'] = $total;
+			
+			$cert_nid = $cert['cert_nid'];
+			$quizzes_to_pass = quiz_reporting_quizzes_to_pass($cert_nid);
+	
+			foreach ($quizzes_to_pass as $qtp){		
+				$qnids[]="nid='$qtp'";
+			}
+			$quiz_or = implode(" or ", $qnids);
+			//watchdog('quiz reporting', print_r($qnids, true), array(), WATCHDOG_NOTICE);
+			$query = "SELECT count(distinct(uid)) from quiz_node_results where {$quiz_or}";
+			//watchdog('quiz reporting', $cert_nid.': '.$query, array(), WATCHDOG_NOTICE);
+			$stats['Not Started'] = ( $total - db_result(db_query($query)) );
+			
+	  
+			$quizzes_to_pass = quiz_reporting_quizzes_to_pass($cert_nid);
+		
+			$query = "SELECT COUNT(*) FROM (SELECT count(u.uid)
+			FROM {users} u LEFT JOIN {quiz_node_results} qnrs ON (u.uid = qnrs.uid)
+			LEFT JOIN {quiz_node_properties} qnp ON (qnrs.nid = qnp.nid AND qnrs.nid = qnp.nid)
+			WHERE qnrs.score >= qnp.pass_rate
+			AND qnrs.nid in (%s) {$date_clause}
+			GROUP BY u.uid
+			HAVING COUNT(qnrs.nid) >= %d) t";
+			$certified = db_result(db_query($query, implode(',', $quizzes_to_pass)), count($quizzes_to_pass));
+			$stats['Certified'] = $certified;
+		
+			$query = "SELECT count(u.uid)
+			FROM {users} u LEFT JOIN {quiz_node_results} qnrs ON (u.uid = qnrs.uid)
+			LEFT JOIN {quiz_node_properties} qnp ON (qnrs.nid = qnp.nid AND qnrs.nid = qnp.nid)
+			WHERE qnrs.score >= qnp.pass_rate
+			AND qnrs.nid in (%s) {$date_clause}
+			GROUP BY u.uid
+			HAVING COUNT(qnrs.nid) <= %d";
+		
+			$not_finished = db_result(db_query($query, implode(',', $quizzes_to_pass)), count($quizzes_to_pass));
+			$stats['Not Finished'] = $not_finished;
+		
+			$stats['Not Certified'] = $total  - $stats['Certified'];
+			$stats = serialize($stats);
+			
+			db_insert('quiz_reporting_saved_stats_month')
+			->fields(array(
+			'cert_nid' => $cert_nid,
+			'timestamp' => time(),
+			'month' => $month,
+			'vals' => $stats
+			))
+			->execute();
+			$lastId = Database::getConnection()->lastInsertId();
+
+		}
+	}
+}
+
+
+
+// an older version of this function kept around in case i need it
+function _quiz_reporting_get_stats_deprecated($month = 'all'){
+  // used if we are doing a date query later
+  if ($month == "this") {
+    $last_run = variable_get('quiz_reporting_monthly_last_run', 0);
+    $stats = variable_get('quiz_reporting_monthly_stats', array());
+
+    $start_date = strtotime('first day of this month');
+    $date_clause = "AND u.created > ". $start_date;
+  }
+  else {
+    $last_run = variable_get('quiz_reporting_last_run', 0);
+    $stats = variable_get('quiz_reporting_stats', array());
+  }
+  
+  if (!$stats OR (time() - $last_run) > 86400) {
+    watchdog('quiz reporting', 'Generating statistics', array(), WATCHDOG_NOTICE);
+    $stats = array();
+    
+    $total_query = "SELECT COUNT(*) FROM {users} u WHERE 1 = 1 " . $date_clause;
+    $total = db_result(db_query($total_query));
+    if (!empty($total)) {
+      $query = "SELECT COUNT(u.uid)
+      FROM {users} u LEFT JOIN {quiz_node_results} qnrs ON (u.uid = qnrs.uid)
+      WHERE qnrs.uid IS null " . $date_clause;
+      $stats['Not Started'] = db_result(db_query($query));
+      
+      $certs = quiz_reporting_certificates();
+      foreach ($certs as $cert) {
+        $quizzes_to_pass = quiz_reporting_quizzes_to_pass($cert['cert_nid']);
+      
+        $query = "SELECT COUNT(*) FROM (SELECT count(u.uid)
+        FROM {users} u LEFT JOIN {quiz_node_results} qnrs ON (u.uid = qnrs.uid)
+        LEFT JOIN {quiz_node_properties} qnp ON (qnrs.nid = qnp.nid AND qnrs.nid = qnp.nid)
+        WHERE qnrs.score >= qnp.pass_rate
+        AND qnrs.nid in (%s) {$date_clause}
+        GROUP BY u.uid
+        HAVING COUNT(qnrs.nid) >= %d) t";
+        $certified = db_result(db_query($query, implode(',', $quizzes_to_pass)), count($quizzes_to_pass));
+        $stats['Certified'] = $certified;
+      
+        $query = "SELECT count(u.uid)
+        FROM {users} u LEFT JOIN {quiz_node_results} qnrs ON (u.uid = qnrs.uid)
+        LEFT JOIN {quiz_node_properties} qnp ON (qnrs.nid = qnp.nid AND qnrs.nid = qnp.nid)
+        WHERE qnrs.score >= qnp.pass_rate
+        AND qnrs.nid in (%s) {$date_clause}
+        GROUP BY u.uid
+        HAVING COUNT(qnrs.nid) <= %d";
+      
+        $not_finished = db_result(db_query($query, implode(',', $quizzes_to_pass)), count($quizzes_to_pass));
+        $stats['Not Finished'] = $not_finished;
+      
+       // $stats['Not Certified'] = $total - $stats['Not Started'] - $stats['Not Finished'] - $stats['Certified'];
+       $stats['Not Certified'] = $total  - $stats['Certified'];
+     
+      }
+      db_insert('quiz_reporting_saved_stats')
+        ->fields(array(
+            'cert_nid' => $cert_nid,
+            'timestamp' => time(),
+            'month' => $month,
+            'values' => $stats,
+          ))
+        ->execute();
+    }
+  }
+  return $stats;
+}
+
+/**
+ * Returns array of certificates.
+ */
+function quiz_reporting_certificates() {
+  $result = db_query("SELECT nid, title FROM {node} WHERE type = 'certificate'");
+  while ($row = db_fetch_array($result)) {
+    $certificates[] = array(
+      'cert_nid' => $row['nid'],
+      'cert_title' => $row['title'],
+    );
+  }
+  return $certificates;
+}
+
+/**
+ * Returns array of quiz NIDs required to pass certification.
+ */
+function quiz_reporting_quizzes_to_pass($cert_nid = NULL) {
+  $condition = $cert_nid ? "AND cc.cid = $cert_nid" : '';
+
+  $result = db_query("SELECT q.nid
+    FROM {certify_conditions} cc
+    LEFT JOIN {node} n ON (cc.cid = n.nid)
+    LEFT JOIN {node} q ON (cc.condnode = q.nid)
+    WHERE q.status = 1
+      $condition");
+
+  $nids = array();
+  while ($row = db_fetch_array($result)) {
+    $nids[] = $row['nid'];
+  }
+
+  return $nids;
+}
+
+
+/**
+ * In a given certificate, returns array of user IDs who have passed, failed,
+ * etc.
+ *
+ * @param $certificate_nid
+ *   The certificate NID.
+ * @param $status
+ *   A string of "not_started", "graduates", or "not_finished".
+ */
+function quiz_reporting_certificate_users($certificate_nid, $status) {
+  // Get quizzes required to pass certification.
+  $quiz_nids = quiz_reporting_quizzes_to_pass($certificate_nid);
+  $placeholders = db_placeholders($quiz_nids);
+
+  switch ($status) {
+
+    // Get users who have not started any quizzes.
+    case 'not_started':
+      $result = db_query("SELECT uid
+        FROM {users}
+        WHERE uid NOT IN (
+          SELECT DISTINCT uid
+          FROM {quiz_node_results}
+          WHERE nid IN ($placeholders)
+        )", $quiz_nids);
+      $uids = array();
+      while ($row = db_fetch_object($result)) {
+        $uids[] = $row->uid;
+      }
+      return $uids;
+
+    // Get users who have passed all quizzes.
+    case 'graduates':
+      $result = db_query("SELECT subquery2.uid
+        FROM (
+          SELECT quiz_node_results.uid, IF(MAX(quiz_node_results.score) >= quiz_node_properties.pass_rate, 1, 0) 'passed'
+          FROM {quiz_node_results}
+          INNER JOIN {quiz_node_properties} ON quiz_node_properties.nid = quiz_node_results.nid
+          WHERE quiz_node_results.nid IN ($placeholders)
+          GROUP BY quiz_node_results.uid, quiz_node_results.nid
+        ) subquery2
+        GROUP BY subquery2.uid
+        HAVING COUNT(subquery2.passed) >= %d", array_merge($quiz_nids, array(count($quiz_nids))));
+      $uids = array();
+      while ($row = db_fetch_object($result)) {
+        $uids[] = $row->uid;
+      }
+      return $uids;
+
+    // Get users who have started quizzes, but not passed them.
+    case 'not_finished':
+      $result = db_query("SELECT subquery2.uid
+        FROM (
+          SELECT quiz_node_results.uid, IF(MAX(quiz_node_results.score) >= quiz_node_properties.pass_rate, 1, 0) 'passed'
+          FROM {quiz_node_results}
+          INNER JOIN {quiz_node_properties} ON quiz_node_properties.nid = quiz_node_results.nid
+          WHERE quiz_node_results.nid IN ($placeholders)
+          GROUP BY quiz_node_results.uid, quiz_node_results.nid
+        ) subquery2
+        GROUP BY subquery2.uid
+        HAVING COUNT(subquery2.passed) < %d", array_merge($quiz_nids, array(count($quiz_nids))));
+      $uids = array();
+      while ($row = db_fetch_object($result)) {
+        $uids[] = $row->uid;
+      }
+      return $uids;
+
+    default:
+      return array();
+
+  }
+}
+
+
+/**
+* this downloads a file specified in /admin/quiz/download/filename
+* where filename is the name of the file
+* the files are stored in /files/quiz_reporting/uid/filename
+* so need to add some perms and error handlers
+* but with the URL which is posted to the complete page,
+* only the user who created the file can download it
+**/
+function quiz_reporting_download($file) {
+  global $user;
+  $filepath = file_directory_path() . '/quiz_reporting/' . $user->uid . '/' . $file;
+  //dd($filepath);
+  $options = array(
+      "Content-type: text/plain",
+      "Content-Disposition: attachment; filename=" . $file,
+      "Content-Length: " . filesize($filepath),
+    );
+  //dd(print_r($options, TRUE));
+  file_transfer($filepath, $options);
+}
+
+/**
+* return the name of the report
+* used to create the file name in the batch, and the report name 
+* in the save function
+**/ 
+function _quiz_reporting_create_report_name($form_values){
+  if ($form_values['report_name']) {
+     $report_name = $form_values['report_name'];
+  }
+  else {
+    list($x, $report_name) = explode(":", $form_values['report']);
+    if (!$report_name) {
+      $report_name = $form_values['report'];
+    }
+    $report_name = str_replace(' ', '-', variable_get('site_name', '')) . '-' . $report_name;
+  }
+  return $report_name;
+}
+
+/**
+ * Called at start of reporting process to create column labels at top of CSV.
+ */
+function quiz_reporting_write_header($filepath, $certificates = array()) {
+  $header = array(
+    t('User Id'),
+    t('Username'),
+    t('Email'),
+    t('Registered'),
+  );
+
+  // Add profile field titles.
+  list($profile_titles, $profile_names) = quiz_reporting_profile_fields();
+  $header = array_merge($header, $profile_titles);
+
+  // Assemble list of certificates.
+  if (empty($certificates)) {
+    foreach (quiz_reporting_certificates() as $certificate) {
+      $certificates[] = $certificate['cert_nid'];
+    }
+  }
+
+  // Add certificate columns for each certificate.
+  foreach ($certificates as $certificate) {
+    list($quiz_h, $quiz_h2) = _quiz_reporting_get_quiz_info($certificate);
+    $header = array_merge($header, array_keys($quiz_h2));
+  }
+
+  // Write header row.
+  quiz_results_write_file($filepath, 'w', '"' . implode('","', $header) . '"' . "\n");
+  return TRUE;
+}
+
+/**
+ * Called for each user row in report.
+ */
+function quiz_reporting_write_row($uid, $filepath, $certificates = array()) {
+  // Load user.
+  $account = user_load($uid);
+
+  // Account fields.
+  $row = array(
+    'uid' => $account->uid,
+    'name' => $account->name,
+    'email' => $account->mail,
+    'created' => '"' . quiz_reporting_format_date($account->created) . '"',
+  );
+
+  // Profile fields.
+  static $profile_titles, $profile_names;
+  if (!isset($profile_names)) {
+    list($profile_titles, $profile_names) = quiz_reporting_profile_fields();
+  }
+  if (is_array($profile_names)) {
+    foreach ($profile_names as $fid => $field_name) {
+      $row[$field_name] = isset($account->$field_name) ? '"' . $account->$field_name . '"' : '';
+    }
+  }
+
+  // Assemble list of certificates.
+  if (empty($certificates)) {
+    foreach (quiz_reporting_certificates() as $certificate) {
+      $certificates[] = $certificate['cert_nid'];
+    }
+  }
+
+  // Add certificate columns for each certificate.
+  foreach ($certificates as $certificate) {
+    static $quiz_h, $quiz_h2;
+    if (!isset($quiz_h[$certificate])) {
+      list($quiz_h[$certificate], $quiz_h2[$certificate]) = _quiz_reporting_get_quiz_info($certificate);
+    }
+    $results = quiz_reporting_user_results($uid, $certificate);
+    $certificate_status = 'Not Started';
+    foreach ($quiz_h[$certificate] as $title => $nid) {
+      $progress = quiz_reporting_progress($results[$nid]);
+      if ($progress != 'Not Started') {
+        $certificate_status = $progress;
+      }
+      $row[$title] = '"' . $progress . '"';
+      $row["$title-start"] = '"' . quiz_reporting_format_date($results[$nid]->time_start) . '"';
+      $row["$title-end"] = '"' . quiz_reporting_format_date($results[$nid]->time_end) . '"';
+    }
+  }
+
+  // Write row.
+  quiz_results_write_file($filepath, 'a', implode(',', $row) . "\n");
+  return $certificate_status;
+}
+
+/**
+ * Writes to a file.
+ */
+function quiz_results_write_file($filename, $mode, $data = NULL) {
+  // Open file.
+  $handle = @fopen($filename, $mode);
+
+  // Fail if file is not writeable.
+  if ($handle === FALSE) {
+    drupal_set_message(t('Cannot write to "!filename".', array(
+      '!filename' => $filename,
+    )), 'error');
+    return;
+  }
+
+  // Write data, if passed.
+  if ($data !== NULL) {
+    fwrite($handle, $data);
+  }
+
+  // Close file.
+  fclose($handle);
+}
+
+function quiz_reporting_user_results($uid, $certificate) {
+  $and = implode(', ', quiz_reporting_quizzes_to_pass($certificate));
+  $quiz_results = db_query("SELECT n.nid,
+      n.title,
+      qnrs.uid,
+      qnrs.result_id,
+      MAX(qnrs.score) score,
+      qnp.pass_rate,
+      MIN(qnrs.time_start) time_start,
+      MAX(qnrs.time_end) time_end
+    FROM {node} n
+    INNER JOIN {quiz_node_results} qnrs ON qnrs.nid = n.nid
+    INNER JOIN {quiz_node_properties} qnp ON qnp.nid = qnrs.nid
+    WHERE n.type = 'quiz'
+      AND qnrs.nid IN ($and)
+      AND qnrs.uid = %d
+    GROUP BY qnrs.nid, qnrs.uid
+    ORDER BY n.title ASC, qnrs.score DESC, qnrs.result_id DESC", $uid);
+
+  $results = array();
+  while ($quiz_result = db_fetch_object($quiz_results)) {
+    $results[$quiz_result->nid] = $quiz_result;
+  }
+  return $results;
+}
+
+function quiz_reporting_progress($quiz_result) {
+  $status = '';
+  if (empty($quiz_result)) {
+   $status = 'Not Started';
+  }
+  else {
+    if ($quiz_result->time_end == 0) {
+      $status = 'Not Finished';
+    }
+  }
+  if (!$status) {
+    if ($quiz_result->score < $quiz_result->pass_rate) {
+      $status = 'Fail';
+    }
+    if ($quiz_result->score >= $quiz_result->pass_rate) {
+      $status = 'Pass';
+    }
+  }
+  return $status;
+}
+
+function _quiz_reporting_get_quiz_info($cert_nid = NULL) {
+
+//  $query = "SELECT q.nid FROM {certify_conditions} cc LEFT JOIN {node} n ON (cc.cid = n.nid) LEFT JOIN {node} q ON (cc.condnode = q.nid) WHERE q.status = 1";
+
+	// I REMOVED THE TOP, ADDED BELOW
+	// IM TRYING TO GET ONLY QUIZZES FROM THE CERT TO SHOW IN CSV
+	if ($cert_nid){
+		$quizes = db_query("SELECT n.nid as xid, n.title
+		FROM node n 
+		WHERE n.type = 'quiz' 
+		ORDER BY n.title ASC");                                                                                                                                                                                  
+
+		$quizes = db_query("SELECT q.nid as xid, q.title FROM {certify_conditions} cc LEFT JOIN {node} n ON (cc.cid = n.nid) LEFT JOIN {node} q ON (cc.condnode = q.nid) WHERE q.status = 1 AND cc.cid = {$cert_nid}");
+	} else {
+		$quizes = db_query("SELECT n.nid as xid, n.title FROM node n WHERE n.type = 'quiz' ORDER BY n.title ASC");    	
+	}
+	
+	$quiz_h = array();
+	$quiz_h2 = array();
+	while ($quiz = db_fetch_array($quizes)) {
+		$quiz_h[$quiz['title']] = $quiz['xid'];
+		$quiz_h2[$quiz['title']] = $quiz['xid'];
+		$quiz_h2[$quiz['title'] . '-start'] = $quiz['xid'];
+		$quiz_h2[$quiz['title'] . '-end'] = $quiz['xid'];
+	}
+	return array($quiz_h, $quiz_h2);
+}
+
+/**
+ * Returns array of profile field titles and field names.
+ */
+function quiz_reporting_profile_fields() {
+  $profile_titles = array();
+  $profile_names = array();
+  $profile_fields = db_query("SELECT * FROM {profile_fields}");
+  while ($field = db_fetch_array($profile_fields)) {
+    $profile_titles[] = t($field['title']);
+    $profile_names[$field['fid']] = $field['name'];
+  }
+  return array($profile_titles, $profile_names);
+}
+
+/**
+ * Formats a date.
+ */
+function quiz_reporting_format_date($date) {
+  return $date == 0 ? '' : date("F j, Y, g:i a", $date);
+}
+
+function _quiz_results_export_format_date_sortable($date) {
+  return $date ? date("Y.m.d", $date) : '';
+}
