@@ -1,0 +1,5 @@
+; $Id: gabes_collection.info,v 1.0 2013/02/13 17:03:01 gtumbaga Exp $
+name = gabes_collection
+description = gabes_collection
+package = gabes_collection
+core = 6.x

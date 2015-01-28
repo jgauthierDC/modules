@@ -1,0 +1,123 @@
+<?php
+    function carouselPath_to_NID ($myPath) {
+		$myNID = carouselPath_DB_Search($myPath);
+        if($myNID) {
+            return $myNID;
+        } else {
+			do{
+				$myArray = explode('/', $myPath);
+				array_pop($myArray);
+				$myNewPath = implode('/', $myArray);
+				$myPath = $myNewPath;
+				$myNID = carouselPath_DB_Search($myPath);
+				if($myNID){
+					return $myNID;
+				}else if(!$myNID && count($myArray) == 0){
+					return false;
+				}
+			}while($found == false);
+        }
+    }
+	
+	function carouselPath_DB_Search($myPath) {
+		if($myPath) {
+            $rows = array();
+
+            //$sql = "SELECT node.nid AS nid FROM node node LEFT JOIN content_type_carousel node_data_field_node_destination ON node.vid = node_data_field_node_destination.vid WHERE (node.status <> 0) AND (node.type in ('carousel')) AND (node_data_field_node_destination.field_node_destination_value = '{$myPath}')";
+            $sql = "SELECT node.nid AS nid FROM node node LEFT JOIN content_type_top_banner node_data_field_node_destination ON node.vid = node_data_field_node_destination.vid WHERE (node.status <> 0) AND (node.type in ('top_banner')) AND (node_data_field_node_destination.field_topbanner_dest_value = '{$myPath}')";
+            $res = db_query($sql);
+            while ($row = db_fetch_array($res)) {
+                $rows[] = $row;
+            }
+            //return $rows;
+            return ($rows[0][nid]) ? $rows[0][nid] : false;
+        } else {
+            return false;
+        }
+	}
+
+    
+    function curPageName() {
+        return substr($_SERVER["SCRIPT_NAME"],strrpos($_SERVER["SCRIPT_NAME"],"/")+1);
+    }
+    
+    function curPageURL() {
+        $pageURL = 'http';
+        if ($_SERVER["HTTPS"] == "on") {$pageURL .= "s";}
+        $pageURL .= "://";
+        if ($_SERVER["SERVER_PORT"] != "80") {
+         $pageURL .= $_SERVER["SERVER_NAME"].":".$_SERVER["SERVER_PORT"].$_SERVER["REQUEST_URI"];
+        } else {
+         $pageURL .= $_SERVER["SERVER_NAME"].$_SERVER["REQUEST_URI"];
+        }
+        return $pageURL;
+    }
+
+
+    function gc_GabeWasHere() {
+        return "Gabe Was Here";
+    }
+    
+    function gc_sort_by_key($arr, $key, $reverse=FALSE) { 
+        global $key2sort;
+        $key2sort = $key;
+        if (is_object(current($arr))) {
+            uasort($arr, 'gabes_collection_sbk_obj'); 
+        } else {
+            uasort($arr, 'gabes_collection_sbk_arr'); 
+            if ($reverse) return array_reverse($arr);
+        }
+        return $arr; 
+    }
+    
+    function gc_arg($location) {
+        $splitPath = explode("/", $_SERVER[REQUEST_URI]);
+        return strtolower($splitPath[$location + 1]);
+    }
+    
+    //can combine multiple multigroup CCK fields into a single array
+    function gc_multiGroupCCKsToSingleArray ($iterations, $theNode, $fieldNames) {
+        
+        $myArray = array();
+        
+        for ($x=0; $x < $iterations; $x++) {
+            foreach ($fieldNames as $fieldName) {
+                $myArray[$x][$fieldName] = array();
+                $myTmpArray = $theNode->$fieldName;
+                $myArray[$x][$fieldName] = $myTmpArray[$x];
+            }
+        } 
+        
+        return $myArray;
+    }
+    
+    //Give a Quiz ID and get the Course ID that is node referencing it.
+    function gc_getCourseIDfromQuizID($theQID) {
+        $myquery = "SELECT node.nid AS nid FROM node node LEFT JOIN content_type_course node_data_field_course_quiz ON node.vid = node_data_field_course_quiz.vid WHERE (node.type in ('course')) AND (node_data_field_course_quiz.field_course_quiz_nid =" . $theQID . ");";
+        $myresults = db_fetch_array(db_query($myquery)); // Run the query
+        
+        return $myresults['nid'];
+    }
+    
+    
+    
+    
+//helper functions
+function gabes_collection_sbk_arr($a, $b) {
+	global $key2sort;
+	return strcmp($a[$key2sort],$b[$key2sort]);
+}
+function gabes_collection_sbk_obj($a, $b) {
+	global $key2sort;
+	return strcmp($a->{$key2sort},$b->{$key2sort});
+}
+
+function gc_calculate_ratio($wins, $losses) {
+    if (($wins + $losses) == 0) {
+        return 0;
+    } else {
+        return ($wins / ($wins + $losses));
+    }
+    
+}
+?>

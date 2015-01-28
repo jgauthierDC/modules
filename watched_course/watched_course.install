@@ -1,0 +1,75 @@
+<?php
+// $Id: watched_course.install,v 1.0.0.0 2012/11/16 10:48:52 lkuempel Exp $
+
+/**
+ * @file
+ * Quiz Lock-Out install schema for installing the quiz lock-out module
+ *
+ */
+
+/**
+ * Implementation of hook_install()
+ */
+function watched_course_install() {
+	// Create Tables
+	drupal_install_schema('watched_course');
+  
+	drupal_set_message(t('Watched Course module has been enabled.'));
+}
+
+/**
+* Implementation of hook_schema().
+*/
+function watched_course_schema() {
+	$schema = array();
+
+	// Create the quiz watched course table
+	$schema['quiz_watched_course'] = array(
+		'description' => 'The base table for quiz watched course',
+		'fields' => array(
+			'uid' => array(
+				'type' => 'int',
+				'unsigned' => TRUE,
+				'not null' => TRUE,
+			),
+			'nid' => array(
+				'type' => 'int',
+				'unsigned' => TRUE,
+				'not null' => TRUE,
+			),
+		),
+		'primary key' => array('uid', 'nid'),
+	);
+
+	// Create the quiz watched course session table
+	$schema['quiz_watched_course_sess'] = array(
+		'description' => 'The session table for quiz watched course',
+		'fields' => array(
+			'sessid' => array(
+				'type' => 'varchar',
+				'length' => 64,
+				'not null' => TRUE,
+			),
+			'uid' => array(
+				'type' => 'int',
+				'unsigned' => TRUE,
+				'not null' => TRUE,
+			),
+			'nid' => array(
+				'type' => 'int',
+				'unsigned' => TRUE,
+				'not null' => TRUE,
+			),
+		),
+		'primary key' => array('sessid', 'uid', 'nid'),
+	);
+
+	return $schema;
+}
+
+/**
+ * Implementation of hook_uninstall()
+ */
+function watched_course_uninstall() {
+	drupal_uninstall_schema('watched_course');
+}
