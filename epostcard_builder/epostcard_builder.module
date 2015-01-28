@@ -1,0 +1,97 @@
+<?php
+
+/**
+ * Implementation of hook_menu().
+ */
+function epostcard_builder_menu() {
+    $items['epostcardbuilder/%/%/%'] = array(
+        'title' => "Epostcard Builder",
+        'page callback' => 'epostcard_builder_display_preview',
+        'page arguments' => array(1, 2, 3),
+        'access callback' => TRUE,
+        'type' => MENU_CALLBACK,
+    );
+
+    return $items;
+}
+
+function epostcard_builder_display_preview($myImage, $myTitle, $myBody) {
+    $goodImage = str_replace("_slash_", "/", $myImage);
+    $goodTitle = str_replace("_slash_", "/", $myTitle);
+    $goodBody = str_replace("_slash_", "/", $myBody);
+
+    print epostcard_builder_generate_email($goodImage, $goodTitle, $goodBody);
+}
+
+
+function epostcard_builder_generate_email($emailImage, $emailTitle, $emailBody) {
+	$myEmail = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">';
+	$myEmail .= "
+<html>
+<head>
+<title>ePostcard</title>
+</head>
+<body>
+<table border='0' cellpadding='0' cellspacing='0' bgcolor='#ffffff' width='600' style='margin: 0 auto;'>
+	<tr>
+		<td>
+			<img src='http://hvcb.dc-dev.com/sites/default/themes/dcbase/images/epostcard/epostcard-header.jpg' border='0' style='display: block' />
+		</td>
+	</tr>
+	<tr><td style='height: 2px;'><font style='font-size: 0px;'>&nbsp;</font></td></tr>
+	<tr>
+		<td>
+			<img src='{$emailImage}' border='0' style='display: block' />
+		</td>
+	</tr>
+	<tr><td style='height: 30px;'><font style='font-size: 0px;'>&nbsp;</font></td></tr>
+	<tr>
+		<td>
+			<font style='font-family: Georgia, serif; font-size: 30px; color: #5b7c84;'>{$emailTitle}</font>
+		</td>
+	</tr>
+	<tr><td style='height: 30px;'><font style='font-size: 0px;'>&nbsp;</font></td></tr>
+	<tr>
+		<td>
+			<font style='font-family: Trebuchet MS, serif; font-size: 16px; color: #000000;'>{$emailBody}</font>
+		</td>
+	</tr>
+</table>
+</body>
+</html>
+	";
+	
+	return $myEmail;
+}
+
+
+function epostcard_builder_send_email($emailImage, $emailTitle, $emailBody, $emailAddresses) {
+	
+	//$debug = "image: {$emailImage}<br/><br/>title: {$emailTitle}<br/><br/>body: {$emailBody}<br/><br/>addresses: {$emailAddresses}<br/><br/>";
+	global $user;
+    
+
+    $from = $user->mail;
+	
+	$subject = $emailTitle;
+	
+	$headers = "From: " . $from . "\r\n";
+	$headers .= "Reply-To: ". $from . "\r\n";
+	//$headers .= "CC: susan@example.com\r\n";
+	$headers .= "MIME-Version: 1.0\r\n";
+	$headers .= "Content-Type: text/html; charset=ISO-8859-1\r\n";
+	$message = epostcard_builder_generate_email($emailImage, $emailTitle, $emailBody);
+	
+	$emails = explode(";", $emailAddresses);
+	//print_r($emails);
+    $emails = array_slice($emails, 0, 20);
+    foreach ($emails as $to){
+    	if ($to){
+			mail($to, $subject, $message, $headers);
+    	}
+	}
+	
+	$success = $debug . "Your ePostcard has successfully been sent!";
+	return $success;
+}
+?>

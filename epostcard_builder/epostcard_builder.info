@@ -1,0 +1,5 @@
+; $Id: epostcard_builder.info,v 1.0 2014/12/23 16:44:01 gtumbaga Exp $
+name = epostcard_builder
+description = epostcard_builder
+package = epostcard_builder
+core = 6.x
